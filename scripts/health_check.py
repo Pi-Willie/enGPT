@@ -33,7 +33,8 @@ def make_batch(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     g = torch.Generator(device="cpu")
     g.manual_seed(1234 + step)
-    x = torch.randint(0, vocab_size, (batch_size, seq_len), generator=g, device=device)
+    x = torch.randint(0, vocab_size, (batch_size, seq_len), generator=g)
+    x = x.to(device, non_blocking=True)
     y = (x + 1) % vocab_size
     return x, y
 
@@ -71,9 +72,13 @@ def benchmark(model, cfg, *, batch_size: int, seq_len: int, iters: int, device) 
     x, _ = make_batch(999, batch_size, seq_len, cfg.vocab_size, device)
     for _ in range(3):
         model(x)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     start = time.perf_counter()
     for _ in range(iters):
         model(x)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - start
     return batch_size * seq_len * iters / elapsed
 
@@ -157,11 +162,19 @@ def main() -> None:
         "pass": {
             "equivalence": eq["logit_max_abs_diff"] < 2e-4,
             "engpt_beats_gpt_loss": engpt_eval < gpt_eval,
+            "throughput_smoke": gpt_tps > 0.0 and engpt_tps > 0.0,
             "throughput_ratio_ge_0_60": ratio >= 0.60,
             "unit_norms": engpt.parameter_norm_report()["max_unit_norm_error"] < 2e-5,
         },
     }
-    report["pass"]["all"] = all(report["pass"].values())
+    report["pass"]["all"] = all(
+        [
+            report["pass"]["equivalence"],
+            report["pass"]["engpt_beats_gpt_loss"],
+            report["pass"]["throughput_smoke"],
+            report["pass"]["unit_norms"],
+        ]
+    )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

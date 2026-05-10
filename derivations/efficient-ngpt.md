@@ -35,7 +35,7 @@ The key implementation move is not “eventually return to the sphere.” The ke
 (y,\rho),\qquad h=\frac{y}{\rho}.
 ]
 
-Every operation that nGPT would apply to (h) is computed exactly from ((y,\rho)). Normalized hidden vectors need not be materialized at block boundaries, after attention, or before the output head. The denominator (\rho) is consumed as a row scalar inside the next projection or output-head kernel.
+Every operation that nGPT would apply to (h) is computed exactly from ((y,\rho)). Normalized hidden vectors need not be materialized at block boundaries or after attention. The current portable output helper uses a standard GEMM-shaped expression for throughput, while keeping the same carried-state logit equation.
 
 ---
 

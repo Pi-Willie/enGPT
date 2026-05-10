@@ -2,6 +2,16 @@
 
 ## 2026-05-10
 
+- Added carried-state kernel boundaries for QKV postprocessing, MLP up/gate,
+  output logits, and folded residual-plus-gauge.
+- Added optional Triton row/column retraction and tangent-gradient projection
+  kernels with PyTorch fallbacks for non-Triton or non-CUDA environments.
+- Moved derivation notes under `derivations/` and added a concise kernel
+  implementation note that matches the current code.
+- Updated the public performance sentence after the CUDA benchmark pass:
+  forward throughput is still about `0.91x` GPT, train throughput improved to
+  about `0.82x` GPT, and peak train memory is about `1.00x` GPT for the checked
+  run.
 - Started a focused correctness/debugging pass because the FineWeb 10M-token run showed enGPT/nGPT was still behind the GPT baseline in token efficiency.
 - Compared the local implementation with NVIDIA's public nGPT reference implementation.
 - Identified two minimal candidate mismatches to test:

@@ -23,9 +23,10 @@ The repository includes:
 ## Results
 
 The first figure is the most important one to show. On a 10M-token FineWeb GPT-2
-token stream, enGPT improves token efficiency while staying close to the GPT
-baseline's practical profile: `0.91x` GPT forward throughput, `0.70x` train
-throughput, and `0.92x` peak train memory in this run.
+token stream, enGPT improves token efficiency; on the current CUDA kernel
+benchmark at the same 4-layer, `d=256`, `T=256`, `B=16` shape it measures
+`0.91x` GPT forward throughput, `0.82x` train throughput, and `1.00x` peak train
+memory.
 
 ![Token efficiency loss](assets/figures/gallery/token_efficiency_loss_step.png)
 

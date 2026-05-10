@@ -11,17 +11,18 @@ import torch.nn.functional as F
 from .config import ModelConfig
 from .kernels import (
     apply_rope,
-    apply_rope_inplace,
-    carried_residual,
+    carried_up_gate_swiglu,
+    carried_residual_gauge,
     causal_sdpa,
-    gauge_carried_state,
     gpt_attention_scale,
     ngpt_attention_scale,
     normalize_columns_,
     normalize_last_dim,
     normalize_rows_,
+    qkv_postprocess_from_carried,
     reference_residual,
     rotary_frequencies,
+    scaled_logits_from_carried,
 )
 
 
@@ -139,26 +140,7 @@ class EfficientNGPTBlock(nn.Module):
     def forward(self, y: Tensor, rho: Tensor, cos: Tensor, sin: Tensor) -> Tuple[Tensor, Tensor]:
         bsz, seq_len, _ = y.shape
         qkv = self.qkv(y).view(bsz, seq_len, 3, self.cfg.n_head, self.cfg.head_dim)
-        q_raw, k_raw, v_raw = qkv.unbind(dim=2)
-        q_den = torch.linalg.vector_norm(q_raw, ord=2, dim=-1)
-        k_den = torch.linalg.vector_norm(k_raw, ord=2, dim=-1)
-        if self.cfg.norm_eps > 0:
-            guard = rho.unsqueeze(-1) * self.cfg.norm_eps
-            q_den = torch.maximum(q_den, guard)
-            k_den = torch.maximum(k_den, guard)
-        scale = self.qk_scale.view(1, 1, self.cfg.n_head, self.cfg.head_dim)
-        if torch.is_grad_enabled():
-            q = apply_rope(q_raw, cos, sin)
-            k = apply_rope(k_raw, cos, sin)
-            q = (q / q_den.unsqueeze(-1)) * scale
-            k = (k / k_den.unsqueeze(-1)) * scale
-            v = v_raw / rho.view(bsz, seq_len, 1, 1)
-        else:
-            q = apply_rope_inplace(q_raw, cos, sin)
-            k = apply_rope_inplace(k_raw, cos, sin)
-            q.div_(q_den.unsqueeze(-1)).mul_(scale)
-            k.div_(k_den.unsqueeze(-1)).mul_(scale)
-            v = v_raw.div_(rho.view(bsz, seq_len, 1, 1))
+        q, k, v = qkv_postprocess_from_carried(qkv, rho, cos, sin, self.qk_scale, self.cfg.norm_eps)
 
         attn = causal_sdpa(
             q,
@@ -168,34 +150,35 @@ class EfficientNGPTBlock(nn.Module):
             dropout_p=0.0,
         )
         branch = self.out_proj(attn.reshape(bsz, seq_len, -1))
-        y, rho = carried_residual(
+        y, rho = carried_residual_gauge(
             y,
             rho,
             branch,
             self.alpha_attn,
             self.cfg.norm_eps,
             self.cfg.norm_eps,
+            self.cfg.carried_gauge_max,
         )
-        y, rho = gauge_carried_state(y, rho, self.cfg.carried_gauge_max)
 
-        mlp_in = y / rho.unsqueeze(-1)
-        uv = self.up_gate(mlp_in)
-        u, gate = uv.chunk(2, dim=-1)
-        u = u * self.s_u.view(1, 1, -1)
-        if self.cfg.scale_mlp_u_by_sqrt_d:
-            u = u * math.sqrt(float(self.cfg.n_embd))
-        gate = gate * self.s_gate.view(1, 1, -1) * math.sqrt(float(self.cfg.n_embd))
-        hidden = u * F.silu(gate)
+        hidden = carried_up_gate_swiglu(
+            y,
+            rho,
+            self.up_gate.weight,
+            self.s_u,
+            self.s_gate,
+            sqrt_d=math.sqrt(float(self.cfg.n_embd)),
+            scale_u_by_sqrt_d=self.cfg.scale_mlp_u_by_sqrt_d,
+        )
         branch = self.down_proj(hidden)
-        y, rho = carried_residual(
+        y, rho = carried_residual_gauge(
             y,
             rho,
             branch,
             self.alpha_mlp,
             self.cfg.norm_eps,
             self.cfg.norm_eps,
+            self.cfg.carried_gauge_max,
         )
-        y, rho = gauge_carried_state(y, rho, self.cfg.carried_gauge_max)
         return y, rho
 
     def forward_reference(self, h: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
@@ -240,15 +223,10 @@ class EfficientNGPTBlock(nn.Module):
     @torch.no_grad()
     def project_parameters_(self, eps: float = 1e-12) -> None:
         qkv = self.qkv.weight
-        d = self.cfg.n_embd
-        normalize_rows_(qkv[:d], eps)
-        normalize_rows_(qkv[d : 2 * d], eps)
-        normalize_rows_(qkv[2 * d :], eps)
+        normalize_rows_(qkv, eps)
         normalize_columns_(self.out_proj.weight, eps)
 
-        ff = self.cfg.mlp_width
-        normalize_rows_(self.up_gate.weight[:ff], eps)
-        normalize_rows_(self.up_gate.weight[ff:], eps)
+        normalize_rows_(self.up_gate.weight, eps)
         normalize_columns_(self.down_proj.weight, eps)
 
 
@@ -300,8 +278,7 @@ class EfficientNGPT(nn.Module):
                 )
             else:
                 y, rho = block(y, rho, cos, sin)
-        h = y / rho.unsqueeze(-1)
-        logits = F.linear(h, self.output_emb * self.logit_scale.unsqueeze(-1))
+        logits = scaled_logits_from_carried(y, rho, self.output_emb, self.logit_scale)
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))

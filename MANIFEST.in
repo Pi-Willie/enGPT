@@ -1,7 +1,7 @@
 include README.md
 include LICENSE
 include changelog.md
-include efficient-ngpt.md
+recursive-include derivations *.md
 recursive-include assets/figures *.png *.pdf
 recursive-include assets/reports *.json
 recursive-include examples *.py

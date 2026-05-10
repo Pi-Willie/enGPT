@@ -5,6 +5,7 @@ from typing import List
 import torch
 from torch import nn
 
+from .kernels import project_column_grad_, project_row_grad_
 from .models import EfficientNGPT, GPTBaseline
 
 
@@ -72,12 +73,12 @@ def build_ngpt_adamw(
 
 @torch.no_grad()
 def _project_row_grad_(weight: torch.Tensor, grad: torch.Tensor) -> None:
-    grad.sub_((grad * weight).sum(dim=-1, keepdim=True) * weight)
+    project_row_grad_(weight, grad)
 
 
 @torch.no_grad()
 def _project_col_grad_(weight: torch.Tensor, grad: torch.Tensor) -> None:
-    grad.sub_(weight * (grad * weight).sum(dim=0, keepdim=True))
+    project_column_grad_(weight, grad)
 
 
 @torch.no_grad()
@@ -88,21 +89,16 @@ def project_ngpt_gradients_(model: EfficientNGPT) -> None:
         _project_row_grad_(model.output_emb, model.output_emb.grad)
 
     for block in model.blocks:
-        d = model.cfg.n_embd
         qkv = block.qkv.weight
         if qkv.grad is not None:
-            _project_row_grad_(qkv[:d], qkv.grad[:d])
-            _project_row_grad_(qkv[d : 2 * d], qkv.grad[d : 2 * d])
-            _project_row_grad_(qkv[2 * d :], qkv.grad[2 * d :])
+            _project_row_grad_(qkv, qkv.grad)
 
         if block.out_proj.weight.grad is not None:
             _project_col_grad_(block.out_proj.weight, block.out_proj.weight.grad)
 
-        ff = model.cfg.mlp_width
         up_gate = block.up_gate.weight
         if up_gate.grad is not None:
-            _project_row_grad_(up_gate[:ff], up_gate.grad[:ff])
-            _project_row_grad_(up_gate[ff:], up_gate.grad[ff:])
+            _project_row_grad_(up_gate, up_gate.grad)
 
         if block.down_proj.weight.grad is not None:
             _project_col_grad_(block.down_proj.weight, block.down_proj.weight.grad)
