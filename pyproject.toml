@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "efficient-ngpt"
+version = "0.1.0"
+description = "Efficient carried-radius nGPT with a vanilla GPT AdamW baseline."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "The Efficient nGPT authors"}]
+dependencies = ["torch>=2.0"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+data = [
+    "datasets>=2.14",
+    "numpy>=1.23",
+    "tiktoken>=0.5",
+    "transformers>=4.30",
+]
+dev = [
+    "build>=1.0",
+    "pytest>=7",
+    "twine>=4",
+]
+plots = ["matplotlib>=3.6"]
+server = [
+    "fastapi>=0.100",
+    "uvicorn>=0.23",
+]
+
+[project.scripts]
+engpt-benchmark = "scripts.benchmark:main"
+engpt-gpu-train = "scripts.gpu_train_benchmark:main"
+engpt-health = "scripts.health_check:main"
+engpt-plot-report = "scripts.plot_gpu_report:main"
+engpt-plot-publication = "scripts.plot_publication:main"
+engpt-serve-report = "scripts.serve_report:main"
+engpt-tokenize-fineweb = "scripts.tokenize_fineweb:main"
+
+[tool.setuptools.packages.find]
+include = ["engpt*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
