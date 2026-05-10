@@ -217,7 +217,7 @@ def main() -> None:
     parser.add_argument("--vocab-size", type=int, default=50257)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--gpt-lr", type=float, default=None)
-    parser.add_argument("--engpt-lr", type=float, default=1e-3)
+    parser.add_argument("--engpt-lr", type=float, default=8e-3)
     parser.add_argument("--gpt-warmup-steps", type=int, default=2000)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--alpha-init", type=float, default=0.05)
