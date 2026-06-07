@@ -69,3 +69,41 @@ def test_ngpt_gradient_projection_is_tangent():
     out = model.blocks[0].out_proj.weight
     outg = model.blocks[0].out_proj.weight.grad
     assert torch.allclose((out * outg).sum(dim=0), torch.zeros(cfg.n_embd), atol=1e-5)
+
+
+def test_tst_bag_size_one_matches_normal_forward():
+    torch.manual_seed(4)
+    cfg = small_cfg()
+    model = EfficientNGPT(cfg)
+    idx = torch.randint(0, cfg.vocab_size, (2, cfg.block_size))
+    targets = torch.randint(0, cfg.vocab_size, (2, cfg.block_size))
+    logits, loss = model(idx, targets)
+    tst_logits, tst_loss = model.forward_tst_superposition(idx, targets, bag_size=1)
+    assert torch.allclose(tst_logits, logits, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(tst_loss, loss, atol=1e-6, rtol=1e-5)
+
+
+def test_tst_carried_bags_represent_unit_centroids():
+    torch.manual_seed(5)
+    cfg = small_cfg()
+    model = EfficientNGPT(cfg)
+    bag_size = 3
+    idx = torch.randint(0, cfg.vocab_size, (2, cfg.block_size))
+    y, rho = model.carried_embedding_bags(idx, bag_size=bag_size)
+    h = y / rho.unsqueeze(-1)
+    assert y.shape == (2, cfg.block_size // bag_size, cfg.n_embd)
+    assert rho.shape == y.shape[:2]
+    assert torch.allclose(torch.linalg.vector_norm(h, dim=-1), torch.ones_like(rho), atol=1e-6)
+
+
+def test_tst_multitarget_loss_is_mean_ce_over_next_bag():
+    torch.manual_seed(6)
+    cfg = small_cfg()
+    model = EfficientNGPT(cfg)
+    bag_size = 2
+    idx = torch.randint(0, cfg.vocab_size, (2, cfg.block_size))
+    targets = torch.randint(0, cfg.vocab_size, (2, cfg.block_size))
+    logits, loss = model.forward_tst_superposition(idx, targets, bag_size=bag_size)
+    target_bags = targets.view(targets.shape[0], targets.shape[1] // bag_size, bag_size)
+    expected = -torch.nn.functional.log_softmax(logits.float(), dim=-1).gather(-1, target_bags).mean()
+    assert torch.allclose(loss, expected, atol=1e-7, rtol=1e-7)

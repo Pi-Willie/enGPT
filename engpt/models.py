@@ -263,11 +263,21 @@ class EfficientNGPT(nn.Module):
     def forward(
         self, idx: Tensor, targets: Optional[Tensor] = None
     ) -> Tuple[Tensor, Optional[Tensor]]:
-        if idx.size(1) > self.cfg.block_size:
-            raise ValueError("sequence length exceeds block_size")
-        cos, sin = self._rope(idx.size(1), idx.device, self.token_emb.weight.dtype)
         y = self.token_emb(idx)
         rho = torch.ones(idx.shape, device=idx.device, dtype=y.dtype)
+        return self.forward_carried(y, rho, targets)
+
+    def forward_carried(
+        self,
+        y: Tensor,
+        rho: Tensor,
+        targets: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Optional[Tensor]]:
+        if y.size(1) > self.cfg.block_size:
+            raise ValueError("sequence length exceeds block_size")
+        if rho.shape != y.shape[:2]:
+            raise ValueError("rho must have shape [batch, sequence]")
+        cos, sin = self._rope(y.size(1), y.device, self.token_emb.weight.dtype)
         for block in self.blocks:
             if self.gradient_checkpointing and self.training:
                 y, rho = checkpoint(
@@ -279,10 +289,54 @@ class EfficientNGPT(nn.Module):
             else:
                 y, rho = block(y, rho, cos, sin)
         logits = scaled_logits_from_carried(y, rho, self.output_emb, self.logit_scale)
+        return logits, self.loss_from_logits(logits, targets)
+
+    def carried_embedding_bags(self, idx: Tensor, bag_size: int, eps: float = 1e-12) -> Tuple[Tensor, Tensor]:
+        if bag_size < 1:
+            raise ValueError("bag_size must be >= 1")
+        if idx.size(1) % bag_size != 0:
+            raise ValueError("sequence length must be divisible by bag_size")
+        emb = self.token_emb(idx)
+        bsz, raw_len, dim = emb.shape
+        y = emb.view(bsz, raw_len // bag_size, bag_size, dim).sum(dim=2)
+        rho = torch.linalg.vector_norm(y, ord=2, dim=-1).clamp_min(eps)
+        return y, rho
+
+    def forward_tst_superposition(
+        self,
+        idx: Tensor,
+        targets: Optional[Tensor] = None,
+        *,
+        bag_size: int,
+        eps: float = 1e-12,
+    ) -> Tuple[Tensor, Optional[Tensor]]:
+        y, rho = self.carried_embedding_bags(idx, bag_size=bag_size, eps=eps)
+        bag_targets = None
+        if targets is not None:
+            if targets.ndim == 2:
+                if targets.shape[0] != idx.shape[0] or targets.shape[1] != y.shape[1] * bag_size:
+                    raise ValueError("2D TST targets must have shape [batch, latent_seq * bag_size]")
+                bag_targets = targets.view(targets.shape[0], y.shape[1], bag_size)
+            elif targets.ndim == 3:
+                if targets.shape[:2] != y.shape[:2] or targets.shape[2] != bag_size:
+                    raise ValueError("3D TST targets must have shape [batch, latent_seq, bag_size]")
+                bag_targets = targets
+            else:
+                raise ValueError("TST targets must be 2D or 3D")
+        return self.forward_carried(y, rho, bag_targets)
+
+    @staticmethod
+    def loss_from_logits(logits: Tensor, targets: Optional[Tensor]) -> Optional[Tensor]:
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
-        return logits, loss
+            if targets.ndim == logits.ndim - 1:
+                loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+            elif targets.ndim == logits.ndim:
+                log_probs = F.log_softmax(logits.float(), dim=-1)
+                loss = -log_probs.gather(-1, targets.long()).mean()
+            else:
+                raise ValueError("targets must be [batch, sequence] or [batch, sequence, bag_size]")
+        return loss
 
     def forward_reference(
         self, idx: Tensor, targets: Optional[Tensor] = None
