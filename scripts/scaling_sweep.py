@@ -747,6 +747,10 @@ def main() -> None:
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+            # The H100 test box has a CUDA/NVRTC mix that can advertise cuDNN
+            # SDPA engines and then fail at runtime. Flash/math SDPA are stable.
+            torch.backends.cuda.enable_cudnn_sdp(False)
     specs = load_specs(args)
     if args.dry_run:
         print_specs(specs, args)
