@@ -52,6 +52,7 @@ engpt-plot-publication = "scripts.plot_publication:main"
 engpt-serve-report = "scripts.serve_report:main"
 engpt-tokenize-fineweb = "scripts.tokenize_fineweb:main"
 engpt-tst-benchmark = "scripts.tst_benchmark:main"
+engpt-scaling-sweep = "scripts.scaling_sweep:main"
 
 [tool.setuptools.packages.find]
 include = ["engpt*", "scripts*"]
