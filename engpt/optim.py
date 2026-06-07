@@ -36,7 +36,7 @@ def build_gpt_adamw(
 
 
 class NGPTAdamW(torch.optim.AdamW):
-    """AdamW with nGPT tangent-gradient projection and exact retraction.
+    """Spherical AdamW with nGPT tangent-gradient projection and exact retraction.
 
     This is the conservative default optimizer for the PyTorch implementation:
     it uses AdamW moments, no weight decay, projects gradients for normalized

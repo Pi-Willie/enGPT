@@ -1559,15 +1559,16 @@ Then future tokens attend to cached (\bar k) and (v) exactly as nGPT would.
 
 The optimizer is not part of the forward equivalence theorem, but it must preserve nGPT’s parameter constraints exactly. The nGPT paper says matrices and embeddings are normalized after each training step along their embedding dimension, and it removes weight decay and warmup. ([arXiv][1])
 
-The safest corrected optimizer is **spherical N-Aurora with a descent guard**:
+The default optimizer for this implementation is **spherical AdamW**:
 
 * It operates on the correct nGPT normalized vector axes.
 * It projects gradients onto the tangent space of the product of spheres.
-* It uses a positive diagonal row scaling and polar factor for matrix updates.
+* It applies AdamW moments to the projected gradients.
+* It uses no weight decay on normalized vectors.
 * It retracts every normalized vector exactly back to unit norm.
-* It accepts a momentum/Aurora direction only if it is a descent direction for the current minibatch gradient; otherwise it falls back to the current-gradient polar direction, which is provably descent.
+* It leaves unconstrained scalar/vector parameters on ordinary AdamW with zero weight decay.
 
-Aurora itself is described as an optimizer for non-square matrices that balances row utilization by approximating an intersection of row-oblique and Stiefel constraints; its released implementation lists `pp_iterations=2` and `pp_beta=0.5` as defaults. ([GitHub][3]) Muon applies momentum plus Newton–Schulz orthogonalization to 2D hidden-layer parameters, with scalar/vector/input/output parameters normally optimized by a standard optimizer. ([kellerjordan.github.io][4])
+This is the optimizer implemented as `NGPTAdamW` in `engpt/optim.py` and built by `build_ngpt_adamw`. It is deliberately conservative: it changes the vanilla AdamW step only where the nGPT manifold requires it.
 
 ## 12.1 Manifold
 
@@ -1703,144 +1704,7 @@ provided the denominator is nonzero. If (D_{i:}\perp A_{i:}), then (A_{i:}-\eta 
 
 Thus retraction preserves the nGPT constraint exactly.
 
-## 12.4 Current-gradient descent direction
-
-Let (f(A)) be the minibatch loss and (G=\nabla_A f(A)). Let
-
-[
-T=P_A(G).
-]
-
-If (T=0), the Riemannian gradient is zero and no first-order descent direction exists on the manifold.
-
-If (T\ne0), define a positive row scale
-
-[
-S=\operatorname{Diag}(s_1,\dots,s_p),
-\qquad
-s_i>0,
-]
-
-and
-
-[
-Q=\operatorname{Polar}(ST),
-]
-
-where for singular value decomposition
-
-[
-ST=U\Sigma V^\top,
-]
-
-the polar factor is
-
-[
-Q=UV^\top.
-]
-
-Set
-
-[
-D=P_A(Q).
-]
-
-### Lemma: (D) is a descent direction
-
-Because (T) is tangent and (P_A) is self-adjoint,
-
-[
-\langle G,D\rangle_F
-====================
-
-# \langle P_A(G),D\rangle_F
-
-# \langle T,P_A(Q)\rangle_F
-
-\langle T,Q\rangle_F.
-]
-
-Let
-
-[
-ST=U\Sigma V^\top.
-]
-
-Then
-
-[
-T=S^{-1}U\Sigma V^\top,
-\qquad
-Q=UV^\top.
-]
-
-Therefore
-
-[
-\langle T,Q\rangle_F
-====================
-
-\operatorname{tr}\left(
-V\Sigma U^\top S^{-1}UV^\top
-\right)
-=======
-
-\operatorname{tr}\left(
-\Sigma U^\top S^{-1}U
-\right).
-]
-
-Since (S^{-1}) is positive definite,
-
-[
-U^\top S^{-1}U\succeq \frac{1}{s_{\max}}I.
-]
-
-Thus
-
-[
-\langle T,Q\rangle_F
-\ge
-\frac{1}{s_{\max}}\operatorname{tr}(\Sigma)
-===========================================
-
-\frac{\lVert ST\rVert_*}{s_{\max}}.
-]
-
-Also,
-
-[
-\lVert ST\rVert_*
-\ge
-s_{\min}\lVert T\rVert_*.
-]
-
-So
-
-[
-\boxed{
-\langle G,D\rangle_F
-\ge
-\frac{s_{\min}}{s_{\max}}\lVert T\rVert_*
-
-> 0.
-> }
-> ]
-
-The update is (A^+=R_A(-\eta D)). Its first-order loss change is
-
-[
-f(A^+)
-======
-
-f(A)-\eta\langle G,D\rangle_F+O(\eta^2).
-]
-
-Therefore (D) is a strict descent direction for sufficiently small (\eta). The alignment lower bound degrades only by the scale condition number (s_{\max}/s_{\min}), so row-scale clipping gives an explicit descent-quality bound.
-
-## 12.5 Momentum handling with descent guard
-
-Momentum is useful but does not guarantee descent against the current minibatch gradient. The corrected optimizer therefore uses a guard.
+## 12.4 Spherical AdamW update
 
 Orient all quantities as rows:
 
@@ -1856,236 +1720,85 @@ Compute current tangent gradient:
 T=P_A(G_A).
 ]
 
-Maintain tangent momentum (M). Transport it by projection:
+Spherical AdamW first replaces the raw Euclidean gradient by (T). AdamW then updates its first and second moment estimates from this tangent gradient:
 
 [
-M\leftarrow P_A(M).
-]
-
-Update momentum:
-
-[
-M\leftarrow \mu M+(1-\mu)T.
-]
-
-Nesterov candidate:
-
-[
-N=T+\mu M.
-]
-
-Construct the Aurora-scaled polar candidate:
-
-[
-Q_N=\operatorname{Polar}(SN),
+m_t=\beta_1m_{t-1}+(1-\beta_1)T,
 ]
 
 [
-D_N=P_A(Q_N).
+v_t=\beta_2v_{t-1}+(1-\beta_2)T\odot T.
 ]
 
-Accept the momentum candidate only if
+With bias correction, the preconditioned update is
 
 [
-\boxed{
-\langle T,D_N\rangle_F
-\ge
-\chi\lVert T\rVert_F\lVert D_N\rVert_F
-}
+D_t=\frac{\widehat m_t}{\sqrt{\widehat v_t}+\epsilon}.
 ]
 
-for some small (\chi\ge0), typically (\chi=0) for pure descent and (\chi>0) for a margin.
-
-If the test fails, use the guaranteed current-gradient direction
+The optimizer applies this update in the ambient coordinates and immediately retracts:
 
 [
-Q_T=\operatorname{Polar}(ST),
-\qquad
-D=P_A(Q_T).
+A^+=R_A(-\eta D_t).
 ]
 
-If the test passes, use
+For column-normalized parameters, the same operation is applied to (A=\Omega_W(W)=W^\top), then transposed back. For row-normalized parameters, it is applied directly to (W).
+
+The AdamW implementation has zero weight decay for enGPT parameters. The "W" in the implementation name reflects use of PyTorch's AdamW machinery and decoupled-weight-decay interface, not a nonzero decay term on constrained vectors.
+
+## 12.5 Why projection before AdamW is required
+
+If the raw gradient has a radial component, an ambient AdamW update can spend optimizer state on directions that the retraction immediately removes. Worse, the moment buffers can keep accumulating radial components that do not represent motion on the product of spheres.
+
+Projecting first makes every stored Adam moment depend only on feasible first-order motion:
 
 [
-D=D_N.
+T\in T_A\mathcal M_A.
 ]
 
-Then
+The subsequent elementwise Adam preconditioning is not itself a Riemannian natural gradient, but the final retraction restores the exact nGPT constraint after every optimizer step. This gives a simple, stable, and implemented default optimizer whose behavior is easy to audit.
 
-[
-\langle G_A,D\rangle_F
-======================
-
-\langle T,D\rangle_F>0
-]
-
-whenever (T\ne0), so the accepted update is a descent direction.
-
-## 12.6 Row-scale balancing
-
-For an oriented matrix update candidate (Z), choose positive row scales (s_i). A practical Aurora-style iteration is:
-
-1. Initialize (s_i=1), or from a clipped inverse row norm of the tangent momentum.
-2. For (r=1,\dots,K_{\rm pp}):
-
-[
-Q^{(r)}=\operatorname{Polar}(S^{(r)}Z),
-]
-
-[
-D^{(r)}=P_A(Q^{(r)}),
-]
-
-[
-e_i^{(r)}=\lVert D_{i:}^{(r)}\rVert_2^2,
-]
-
-[
-\bar e^{(r)}=\frac1p\sum_i e_i^{(r)}.
-]
-
-Update
-
-[
-s_i^{(r+1)}
-===========
-
-\operatorname{clip}*{[s*{\min},s_{\max}]}
-\left[
-s_i^{(r)}
-\left(
-\frac{\bar e^{(r)}}{e_i^{(r)}+\epsilon}
-\right)^{\beta_{\rm pp}}
-\right].
-]
-
-Use (K_{\rm pp}=2) and (\beta_{\rm pp}=0.5) as defaults, matching Aurora’s released defaults. ([GitHub][3])
-
-At a non-clipped fixed point with (\epsilon=0),
-
-[
-s_i^{+}=s_i
-]
-
-implies
-
-[
-\left(
-\frac{\bar e}{e_i}
-\right)^{\beta_{\rm pp}}=1,
-]
-
-so
-
-[
-e_i=\bar e.
-]
-
-Thus the row scaling balances useful tangent update energy, not raw non-tangent energy.
-
-## 12.7 Coupled FFN N-Aurora
-
-For a SwiGLU neuron (j), the natural coupled unit is
-
-[
-\left(
-W_{u,:j},
-W_{\nu,:j},
-W_{d,j:}
-\right).
-]
-
-Orient all three as rows:
-
-[
-A_u=W_u^\top,
-\qquad
-A_\nu=W_\nu^\top,
-\qquad
-A_d=W_d.
-]
-
-Use one shared row scale (s_j) for the neuron triplet. After polar and tangent projection, measure
-
-[
-e_j^{\rm FFN}
-=============
-
-\lVert D_{u,j:}\rVert_2^2
-+
-\lVert D_{\nu,j:}\rVert_2^2
-+
-\lVert D_{d,j:}\rVert_2^2.
-]
-
-Update the shared scale by
-
-[
-s_j^+
-=====
-
-\operatorname{clip}
-\left[
-s_j
-\left(
-\frac{\bar e^{\rm FFN}}{e_j^{\rm FFN}+\epsilon}
-\right)^{\beta_{\rm pp}}
-\right],
-]
-
-where
-
-[
-\bar e^{\rm FFN}
-================
-
-\frac{1}{d_{\rm ff}}
-\sum_j e_j^{\rm FFN}.
-]
-
-At an unclipped fixed point,
-
-[
-e_j^{\rm FFN}=\bar e^{\rm FFN}
-]
-
-for every FFN neuron.
-
-## 12.8 Final optimizer stack
+## 12.6 Final optimizer stack
 
 Use these parameter groups:
 
 [
 E_{\rm in},E_{\rm out}:
 \quad
-\text{row-spherical Adam or row-spherical SGD with exact retraction}.
+\text{row-spherical AdamW with tangent-gradient projection and exact retraction}.
 ]
 
 [
 W_Q,W_K,W_V:
 \quad
-\text{spherical N-Muon/N-Aurora on mathematical columns}.
+\text{row-spherical AdamW on mathematical rows}.
 ]
 
 [
 W_O:
 \quad
-\text{spherical N-Muon/N-Aurora on mathematical rows}.
+\text{column-spherical AdamW on mathematical columns}.
 ]
 
 [
-W_u,W_\nu,W_d:
+W_u,W_\nu:
 \quad
-\text{coupled FFN N-Aurora}.
+\text{row-spherical AdamW on mathematical rows}.
+]
+
+[
+W_d:
+\quad
+\text{column-spherical AdamW on mathematical columns}.
 ]
 
 [
 \alpha_A,\alpha_M,s_{qk},s_u,s_\nu,s_z:
 \quad
-\text{Adam on unconstrained scalar/vector parameters, no weight decay}.
+\text{AdamW with zero weight decay}.
 ]
 
-No weight decay on normalized vectors. After every optimizer step, every normalized vector is retracted to unit norm exactly.
+No weight decay is applied to normalized vectors. After every optimizer step, every normalized vector is retracted to unit norm exactly.
 
 ---
 
@@ -2271,5 +1984,3 @@ Under that contract, enGPT is not a new model. It is nGPT with its normalization
 
 [1]: https://arxiv.org/html/2410.01131v2 "nGPT: Normalized Transformer with Representation Learning on the Hypersphere"
 [2]: https://raw.githubusercontent.com/NVIDIA/ngpt/main/train.py "raw.githubusercontent.com"
-[3]: https://github.com/tilde-research/aurora-release "GitHub - tilde-research/aurora-release: Aurora optimizer release · GitHub"
-[4]: https://kellerjordan.github.io/posts/muon/ "Muon: An optimizer for hidden layers in neural networks | Keller Jordan blog"

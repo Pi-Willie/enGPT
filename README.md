@@ -17,7 +17,7 @@ The repository includes:
 
 - `EfficientNGPT`, an exact carried-radius nGPT decoder.
 - `GPTBaseline`, a pre-LN GPT reference model trained with AdamW.
-- `NGPTAdamW`, AdamW with tangent-gradient projection and unit-sphere retraction.
+- `NGPTAdamW`, spherical AdamW with tangent-gradient projection and unit-sphere retraction.
 - Health checks, FineWeb tokenization, GPU benchmark scripts, and publication plots.
 
 ## Results
