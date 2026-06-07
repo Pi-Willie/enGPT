@@ -271,38 +271,148 @@ def train_tst(
     return {"train": records, "eval": eval_records, "transition_sec": transition_sec}
 
 
+def moving_average(values: List[float], window: int) -> List[float]:
+    if not values:
+        return []
+    window = max(1, min(window, len(values)))
+    out = []
+    total = 0.0
+    for i, value in enumerate(values):
+        total += value
+        if i >= window:
+            total -= values[i - window]
+            out.append(total / window)
+        else:
+            out.append(total / (i + 1))
+    return out
+
+
 def plot_report(report: Dict[str, object], path: pathlib.Path) -> None:
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.7), dpi=145)
+    colors = {"standard": "#2563eb", "tst": "#dc2626"}
+    transition = report["runs"]["tst"].get("transition_sec")
+
+    def mark_transition(ax):
+        if transition is not None:
+            ax.axvline(float(transition), color="#991b1b", linestyle="--", linewidth=1, alpha=0.7)
+
+    def save_single(filename: str, title: str, ylabel: str, series_fn, marker: bool = False) -> None:
+        fig, ax = plt.subplots(figsize=(7.2, 4.4), dpi=145)
+        for name in ["standard", "tst"]:
+            x, y = series_fn(name)
+            ax.plot(
+                x,
+                y,
+                label=name,
+                color=colors[name],
+                marker="o" if marker else None,
+                markersize=3.5 if marker else None,
+                alpha=0.9,
+            )
+        mark_transition(ax)
+        ax.set_title(title)
+        ax.set_xlabel("seconds")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.25)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(path.with_name(filename))
+
+    fig, axes = plt.subplots(2, 2, figsize=(13.5, 9.0), dpi=145)
+    axes = axes.ravel()
     for name, color in [("standard", "#2563eb"), ("tst", "#dc2626")]:
         rows = report["runs"][name]["train"]
         x = [r["clock_seconds"] for r in rows]
         y = [r["loss"] for r in rows]
         axes[0].plot(x, y, label=name, color=color, alpha=0.88)
-    transition = report["runs"]["tst"].get("transition_sec")
-    if transition is not None:
-        axes[0].axvline(float(transition), color="#991b1b", linestyle="--", linewidth=1, alpha=0.7)
-    axes[0].set_title("Training objective")
+    mark_transition(axes[0])
+    axes[0].set_title("Training objective (raw)")
     axes[0].set_xlabel("seconds")
     axes[0].set_ylabel("loss")
     axes[0].grid(True, alpha=0.25)
     axes[0].legend()
 
     for name, color in [("standard", "#2563eb"), ("tst", "#dc2626")]:
-        rows = report["runs"][name]["eval"]
+        rows = report["runs"][name]["train"]
         x = [r["clock_seconds"] for r in rows]
-        y = [r["next_token_eval_loss"] for r in rows]
-        axes[1].plot(x, y, marker="o", label=name, color=color)
-    if transition is not None:
-        axes[1].axvline(float(transition), color="#991b1b", linestyle="--", linewidth=1, alpha=0.7)
-    axes[1].set_title("Next-token eval loss")
+        y = moving_average([r["loss"] for r in rows], window=100)
+        axes[1].plot(x, y, label=name, color=color, alpha=0.95)
+    mark_transition(axes[1])
+    axes[1].set_title("Training objective (100-step moving average)")
     axes[1].set_xlabel("seconds")
     axes[1].grid(True, alpha=0.25)
     axes[1].legend()
+
+    for name, color in [("standard", "#2563eb"), ("tst", "#dc2626")]:
+        rows = report["runs"][name]["eval"]
+        x = [r["clock_seconds"] for r in rows]
+        y = [r["next_token_eval_loss"] for r in rows]
+        axes[2].plot(x, y, marker="o", markersize=3.5, label=name, color=color)
+    mark_transition(axes[2])
+    axes[2].set_title("Next-token eval loss")
+    axes[2].set_xlabel("seconds")
+    axes[2].grid(True, alpha=0.25)
+    axes[2].legend()
+
+    for name, color in [("standard", "#2563eb"), ("tst", "#dc2626")]:
+        rows = report["runs"][name]["train"]
+        x = [r["clock_seconds"] for r in rows]
+        cumulative = []
+        total = 0
+        for row in rows:
+            total += int(row["predicted_tokens"])
+            cumulative.append(total)
+        axes[3].plot(x, cumulative, label=name, color=color)
+    mark_transition(axes[3])
+    axes[3].set_title("Cumulative predicted raw tokens")
+    axes[3].set_xlabel("seconds")
+    axes[3].grid(True, alpha=0.25)
+    axes[3].legend()
+
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path)
+    save_single(
+        "training_objective_raw.png",
+        "Training objective (raw)",
+        "loss",
+        lambda name: (
+            [r["clock_seconds"] for r in report["runs"][name]["train"]],
+            [r["loss"] for r in report["runs"][name]["train"]],
+        ),
+    )
+    save_single(
+        "training_objective_smoothed.png",
+        "Training objective (100-step moving average)",
+        "loss",
+        lambda name: (
+            [r["clock_seconds"] for r in report["runs"][name]["train"]],
+            moving_average([r["loss"] for r in report["runs"][name]["train"]], window=100),
+        ),
+    )
+    save_single(
+        "next_token_eval_loss.png",
+        "Next-token eval loss",
+        "loss",
+        lambda name: (
+            [r["clock_seconds"] for r in report["runs"][name]["eval"]],
+            [r["next_token_eval_loss"] for r in report["runs"][name]["eval"]],
+        ),
+        marker=True,
+    )
+    save_single(
+        "cumulative_predicted_tokens.png",
+        "Cumulative predicted raw tokens",
+        "tokens",
+        lambda name: (
+            [r["clock_seconds"] for r in report["runs"][name]["train"]],
+            [
+                sum(int(row["predicted_tokens"]) for row in report["runs"][name]["train"][: i + 1])
+                for i in range(len(report["runs"][name]["train"]))
+            ],
+        ),
+    )
 
 
 def summarize_run(run: Dict[str, object]) -> Dict[str, float | int | str]:
@@ -320,6 +430,7 @@ def summarize_run(run: Dict[str, object]) -> Dict[str, float | int | str]:
         "first_eval_loss": float(eval_rows[0]["next_token_eval_loss"]),
         "final_eval_loss": float(eval_rows[-1]["next_token_eval_loss"]),
         "eval_loss_delta": float(eval_rows[-1]["next_token_eval_loss"]) - float(eval_rows[0]["next_token_eval_loss"]),
+        "smoothed_final_train_loss_100": moving_average([float(r["loss"]) for r in train], window=100)[-1],
     }
 
 
@@ -408,6 +519,12 @@ def main() -> None:
     }
     report["summary"]["tst_eval_delta_minus_standard"] = (
         report["summary"]["tst"]["eval_loss_delta"] - report["summary"]["standard"]["eval_loss_delta"]
+    )
+    report["summary"]["tst_final_eval_minus_standard"] = (
+        report["summary"]["tst"]["final_eval_loss"] - report["summary"]["standard"]["final_eval_loss"]
+    )
+    report["summary"]["tst_token_throughput_ratio"] = (
+        report["summary"]["tst"]["predicted_tok_per_sec"] / report["summary"]["standard"]["predicted_tok_per_sec"]
     )
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
